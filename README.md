@@ -22,7 +22,9 @@ python ..\..\imgvid_repair.py download
 扫描并下载本地缺失资源（不依赖scan）
 
 python ..\..\imgvid_repair.py scan --type images/videos
+
 python ..\..\imgvid_repair.py download --type images/videos
+
 无type默认all
 
 ————————————————————————————
