@@ -1,5 +1,6 @@
 # IncandescenceArchiver_repair
 GPT6 VibeCoding
+
 ————————————————————————————
 
 修复头像
@@ -44,7 +45,7 @@ python ..\..\html_media_repair.py scan
 python ..\..\html_media_repair.py apply
 备份HTML，为HTML重新插入缺失的本地图片引用
 
-————————————————————————————、
+————————————————————————————
 
 反向查询引用源
 
