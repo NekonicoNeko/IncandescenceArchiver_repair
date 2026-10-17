@@ -50,3 +50,16 @@ python ..\..\html_media_repair.py apply
 反向查询引用源
 
 python ..\..\find_media_refs.py mediakey/avatarid/tweetid/link
+
+————————————————————————————
+
+补充视频预览图
+
+python ..\..\preview_image_repair.py scan  
+扫描本地缺失资源
+
+python ..\..\preview_image_repair.py download  
+扫描并下载本地缺失资源（不依赖scan）
+
+python ..\..\preview_image_repair.py convert "G:\工具\webarchived_tweet_downloader\username_archive"  
+从 webarchived_tweet_downloader 导入
