@@ -4,6 +4,9 @@ GPT6 VibeCoding
 python apply_convert_filename_fix.py  
 一次性补丁 修正archive.py中convert使用的safe_filename错误的问题  
 
+python apply_render_media_priority_fix.py  
+一次性补丁 修正archive.py中render-html、clean-html、build-index优先选择convert生成的错误filename文件的问题
+
 ————————————————————————————
 
 修复头像
