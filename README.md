@@ -69,3 +69,16 @@ python ..\..\preview_image_repair.py download
 
 python ..\..\preview_image_repair.py convert "G:\工具\webarchived_tweet_downloader\username_archive"  
 从 webarchived_tweet_downloader 导入
+
+————————————————————————————
+
+修复convert已经生成的错误filename  
+
+python ../../fix_convert_media_names.py  
+扫描本地错误filename文件
+
+python ../../fix_convert_media_names.py --apply  
+回收哈希重复的错误文件、修正非重复错误文件的文件名、修复HTML和index.json的旧引用
+
+python ../../fix_convert_media_names.py --delete-trash  
+检查回收站并删除回收文件
