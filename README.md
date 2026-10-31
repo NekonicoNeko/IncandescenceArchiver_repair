@@ -1,6 +1,8 @@
 # IncandescenceArchiver_repair
 GPT6 VibeCoding
 
+python apply_convert_filename_fix.py  
+一次性补丁 修正archive.py中convert使用的safe_filename错误的问题
 ————————————————————————————
 
 修复头像
