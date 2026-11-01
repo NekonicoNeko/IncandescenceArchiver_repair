@@ -78,7 +78,10 @@ python ../../fix_convert_media_names.py
 扫描本地错误filename文件
 
 python ../../fix_convert_media_names.py --apply  
-回收哈希重复的错误文件、修正非重复错误文件的文件名、修复HTML和index.json的旧引用
+回收哈希重复的错误文件、修正非重复错误文件的文件名、修复HTML和index.json的旧引用并生成备份
 
 python ../../fix_convert_media_names.py --delete-trash  
 检查回收站并删除回收文件
+
+python ../../fix_convert_media_names.py --delete-backups  
+删除已备份的旧HTML和index
