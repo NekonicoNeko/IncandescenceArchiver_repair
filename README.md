@@ -88,3 +88,9 @@ python ../../fix_convert_media_names.py --delete-backups
 
 python ../../fix_convert_media_names.py --runall  
 自动执行以上四步
+
+python ../../fix_convert_media_names.py --review-issues  
+人工检查不能正常处理的文件
+
+python ../../fix_convert_media_names.py --resolve-conflicts  
+自动处理conflict文件（人工确认内容后再运行）
