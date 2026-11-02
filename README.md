@@ -13,6 +13,9 @@ python apply_convert_filename_fix.py
 python apply_render_media_priority_fix.py  
 一次性补丁 修正archive.py中render-html、clean-html、build-index优先选择convert生成的错误filename文件的问题
 
+python patch_reply_chain_wayback_first.py  
+一次性补丁 将webarchived_tweet_downloader对上级回复链的查找顺序修改为wayback先于xAPI
+
 ————————————————————————————
 
 修复头像
