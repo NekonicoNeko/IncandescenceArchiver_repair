@@ -85,3 +85,6 @@ python ../../fix_convert_media_names.py --delete-trash
 
 python ../../fix_convert_media_names.py --delete-backups  
 删除已备份的旧HTML和index
+
+python ../../fix_convert_media_names.py --runall  
+自动执行以上四步
