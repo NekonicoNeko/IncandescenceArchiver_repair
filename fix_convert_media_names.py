@@ -19,18 +19,27 @@
   python ../../fix_convert_media_names.py --delete-trash     # 校验通过后直接删除回收文件夹
   python ../../fix_convert_media_names.py --delete-backups   # 删除 HTML/index 原版备份
   python ../../fix_convert_media_names.py --runall           # 扫描 → 修复 → 清理，一次完成
+  python ../../fix_convert_media_names.py --review-issues    # 可点击定位到资源管理器的问题清单
+  python ../../fix_convert_media_names.py --resolve-conflicts # 单独处理可确认对应关系的 CONFLICT，文件体积择大
   python ../../fix_convert_media_names.py --root <账号目录> --apply
 
 Python >= 3.10，标准库，无第三方依赖。
-当同源图片 SHA-256 不同时，不比较宽高比，保留文件字节数较大的版本；
-文件大小相同但 SHA-256 不同则报告 CONFLICT；仅有媒体 ID 推断的映射仍要求 SHA-256 一致。
+普通 --apply：同源图片 SHA-256 不同时按字节数择大；等体积不同哈希保持 CONFLICT。
+--resolve-conflicts：仅处理普通规则留下的冲突，图片与视频按字节数择大；
+等体积不同哈希且正确命名版本存在时保留正确命名文件，其余先回收。
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 from datetime import datetime
 import hashlib
+import html
+import secrets
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit, parse_qs
 import json
 import os
 from pathlib import Path
@@ -440,8 +449,8 @@ def discover(root: Path):
     return snap, found, suspicious, total_media, n_json, n_bad_json
 
 
-def classify(snap: Path, found: dict):
-    """先用哈希去重；仅对 URL 证据充分的图片按文件字节数择大保留。"""
+def classify(snap: Path, found: dict, resolve_conflicts: bool = False):
+    """普通模式保留视频和等体积冲突；冲突处理模式按字节数处理已匹配的 CONFLICT。"""
     groups = defaultdict(list)
     for rec in found.values():
         if get_status(rec) == "PENDING":
@@ -496,11 +505,11 @@ def classify(snap: Path, found: dict):
                         r["reason"] = "多份旧文件目标相同且 SHA-256 一致；保留一份改名"
             continue
 
-        if kind != "image" or any(r.get("id_only") for r in members):
+        if not resolve_conflicts and (kind != "image" or any(r.get("id_only") for r in members)):
             conflict("SHA-256 不一致；视频或仅媒体 ID 匹配的文件不自动按尺寸合并")
             continue
-        # 这里只按磁盘上的文件体积（字节数）决胜，不以图片宽高比或像素面积做限制。
-        # 文件大小不能绝对证明画质更好，因此低体积版本始终先回收，供人工确认。
+        # 只按文件体积（字节数）择优，不比较宽高比。冲突专用模式也允许视频。
+        # 文件体积不能证明内容一致，因此小体积版本先回收供人工确认。
         try:
             sizes = {p: p.stat().st_size for _, p in candidates}
         except OSError as exc:
@@ -509,9 +518,12 @@ def classify(snap: Path, found: dict):
         max_bytes = max(sizes.values())
         best = [(r, p) for r, p in candidates if sizes[p] == max_bytes]
         if len({hashes[p] for _, p in best}) != 1:
-            conflict("最大文件体积并列，但 SHA-256 不同；保留全部：" +
-                     "；".join(f"{p.name}={sizes[p]} B" for _, p in candidates))
-            continue
+            # 只有冲突专用模式、且正确命名版本存在并且也是最大体积时，
+            # 才允许等体积但哈希不同的文件择正确名称保留。
+            if not (resolve_conflicts and target.exists() and any(p == target for _, p in best)):
+                conflict("最大文件体积并列但 SHA-256 不同，且没有可优先保留的正确命名版本；" +
+                         "；".join(f"{p.name}={sizes[p]} B" for _, p in candidates))
+                continue
         # 体积最大的版本不止一个但内容完全一致时，优先保留正确命名版本。
         winner_rec, winner = sorted(best, key=lambda item: (item[0] is not None, item[1].name))[0]
         if target.exists() and any(p == target for _, p in best):
@@ -532,7 +544,8 @@ def classify(snap: Path, found: dict):
                     r["reason"] = "多版本文件体积不同，选择更大文件更名；" + report_sizes
             else:
                 set_status(r, "TRASH")
-                r["policy"] = "exact" if hashes[p] == hashes[winner] else "filesize"
+                r["policy"] = ("exact" if hashes[p] == hashes[winner] else
+                               "filesize_equal" if sizes[p] == sizes[winner] else "filesize")
                 r["reason"] = "按文件体积保留较大版本，其余移至回收文件夹；" + report_sizes
 
 
@@ -608,17 +621,193 @@ def save_reference_backups(snap: Path, updates, backup_root: Path):
             os.fsync(f.fileno())
 
 
+def explorer_token(snap: Path, file_path: Path) -> str:
+    """Report locator contains a path relative to the archive, not executable user input."""
+    rel = file_path.relative_to(snap)
+    return base64.urlsafe_b64encode(str(rel).encode("utf-8")).decode("ascii")
+
+
+def locate_in_explorer(snap: Path, token: str) -> int:
+    """Called by report shortcut. Explorer must select the file, not open it."""
+    if os.name != "nt":
+        print("[定位失败] 这个功能需要 Windows 资源管理器。")
+        return 2
+    try:
+        rel = Path(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
+        if (rel.is_absolute() or len(rel.parts) != 2
+                or rel.parts[0] not in ("image", "video")
+                or rel.parts[1] in ("", ".", "..")
+                or Path(rel.parts[1]).name != rel.parts[1]):
+            raise ValueError("非法媒体路径")
+        candidate = snap / rel
+        if candidate.is_symlink():
+            raise ValueError("不允许定位符号链接")
+        file_path = candidate.resolve(strict=True)
+        if not file_path.is_file() or file_path.parent != (snap / rel.parts[0]).resolve():
+            raise ValueError("不是有效的存档媒体文件")
+        subprocess.Popen(["explorer.exe", "/select,", str(file_path)])
+        return 0
+    except (ValueError, OSError, UnicodeError) as exc:
+        print(f"[定位失败] 文件可能已经移动或删除：{exc}")
+        return 2
+
+
+def review_issues(snap: Path) -> int:
+    """Serve interactive report on loopback. Click selects file in Explorer; no .cmd/file:// links."""
+    if os.name != "nt":
+        print("[无法打开] 交互定位需要 Windows。")
+        return 2
+    folder = snap / REPORTS
+    reports = sorted(
+        list(folder.glob("apply_issues_*.csv")) + list(folder.glob("resolve_conflicts_issues_*.csv")),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    if not reports:
+        print("[没有报告] 请先执行 --apply 或 --resolve-conflicts 生成待检查 CSV。")
+        return 2
+    with reports[0].open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    token = secrets.token_urlsafe(24)
+
+    def current_file(idx: int, side: str) -> Path | None:
+        if idx < 0 or idx >= len(rows) or side not in ("old", "new"):
+            return None
+        r = rows[idx]
+        kind, name = r.get("kind", ""), r.get(side, "")
+        if kind not in ("image", "video") or not name or name in (".", ".."):
+            return None
+        if Path(name).name != name or any(c in name for c in "\\/\x00"):
+            return None
+        directory = (snap / kind).resolve()
+        path = snap / kind / name
+        if path.is_symlink() or not path.is_file() or path.resolve().parent != directory:
+            return None
+        return path.resolve()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            parts = urlsplit(self.path)
+            if parse_qs(parts.query).get("key", [None])[0] != token:
+                self.send_error(403)
+                return
+            if parts.path == "/":
+                body = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
+                        '<title>媒体冲突检查</title><style>body{font:14px sans-serif;margin:20px}',
+                        'table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;',
+                        'padding:8px;word-break:break-all}th{background:#eee}a{color:#155ba7}',
+                        '</style></head><body><h2>需要人工检查的文件</h2>',
+                        f'<p>报告：{html.escape(reports[0].name)}；共 {len(rows)} 项。',
+                        '点击“资源管理器选中”即可定位文件，支持中文目录及文件名。</p>',
+                        '<table><tr><th>状态</th><th>原因</th><th>错误命名文件</th><th>对应文件</th></tr>']
+                for i, row in enumerate(rows):
+                    columns = []
+                    for side in ("old", "new"):
+                        name = html.escape(row.get(side, ""))
+                        if current_file(i, side):
+                            link = (f'<a target="_blank" href="/select/{i}/{side}?key={token}">'
+                                    '资源管理器选中</a>')
+                        else:
+                            link = '<span>文件不存在或无法定位</span>'
+                        columns.append(f'<td>{name}<p>{link}</p></td>')
+                    body.append('<tr><td>' + html.escape(row.get("status", "")) +
+                                '</td><td>' + html.escape(row.get("reason", "")) +
+                                '</td>' + ''.join(columns) + '</tr>')
+                body.append('</table></body></html>')
+                payload = ''.join(body).encode('utf-8')
+            else:
+                m = re.fullmatch(r"/select/(\d+)/(old|new)", parts.path)
+                if not m:
+                    self.send_error(404)
+                    return
+                path = current_file(int(m.group(1)), m.group(2))
+                if path is None:
+                    self.send_error(404, "文件已经移动或不存在")
+                    return
+                try:
+                    subprocess.Popen(["explorer.exe", "/select,", str(path)])
+                except OSError as exc:
+                    self.send_error(500, str(exc))
+                    return
+                payload = ('<!doctype html><meta charset="utf-8">'
+                           '<p>已请求资源管理器选中文件。可以关闭此标签页。</p>').encode('utf-8')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    address = f"http://127.0.0.1:{server.server_port}/?key={token}"
+    print(f"[交互问题清单] {reports[0]}")
+    print("[定位功能已启动] 请在浏览器点击资源管理器选中。保持此终端开启，结束时按 Ctrl+C。")
+    webbrowser.open(address)
+    try:
+        server.serve_forever(poll_interval=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def write_report(snap: Path, records: list[dict], mode: str) -> Path:
+    """Scan: full CSV only. Apply/resolve_conflicts: full CSV and unresolved issues CSV."""
     report_dir = snap / REPORTS
     report_dir.mkdir(parents=True, exist_ok=True)
-    path = report_dir / f"{mode}_{utc_stamp()}.csv"
+    stamp = utc_stamp()
     cols = ("kind", "old", "new", "status", "reason", "url")
-    with path.open("x", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(records)
-    return path
 
+    def save(path: Path, rows: list[dict], headers=cols) -> None:
+        with path.open("x", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+
+    total = report_dir / f"{mode}_{stamp}.csv"
+    save(total, records)
+    if mode not in ("apply", "resolve_conflicts"):
+        return total
+
+    ok_states = {"RENAME", "REPLACE", "TRASH", "DONE_RENAME", "DONE_REPLACE", "DONE_TRASH"}
+    issues = [r for r in records if get_status(r) not in ok_states and get_status(r) != "SKIPPED"]
+    issues_path = report_dir / f"{mode}_issues_{stamp}.csv"
+
+    # Offline HTML/CSV cannot reliably launch local executables via hyperlinks.
+    # Actual clickable selection is provided by --review-issues on localhost.
+    def locator(kind: str, name: str) -> tuple[str, str]:
+        if kind not in ("image", "video") or not isinstance(name, str):
+            return "", ""
+        if (not name or name in (".", "..") or Path(name).name != name
+                or any(c in name for c in "\\/\x00")):
+            return "", ""
+        candidate = snap / kind / name
+        if candidate.is_symlink() or not candidate.is_file():
+            return "", ""
+        if candidate.resolve().parent != (snap / kind).resolve():
+            return "", ""
+        return str(candidate.resolve()), ""
+
+    issue_cols = cols + ("错误文件本地路径", "定位错误文件", "对应文件本地路径", "定位对应文件")
+    issue_rows = []
+    for rec in issues:
+        old_path, _ = locator(rec.get("kind", ""), rec.get("old", ""))
+        new_path, _ = locator(rec.get("kind", ""), rec.get("new", ""))
+        row = dict(rec)
+        row.update({"错误文件本地路径": old_path,
+                    "定位错误文件": "运行 --review-issues" if old_path else "文件不存在",
+                    "对应文件本地路径": new_path,
+                    "定位对应文件": "运行 --review-issues" if new_path else "文件不存在"})
+        issue_rows.append(row)
+    save(issues_path, issue_rows, issue_cols)
+
+    print(f"[完整报告] {total}（{len(records)} 项）", flush=True)
+    print(f"[待人工检查] {issues_path}（{len(issues)} 项）", flush=True)
+    print("[可点击定位清单] 在账号目录执行：python ../../fix_convert_media_names.py --review-issues", flush=True)
+    return total
 
 def check_recycle(snap: Path) -> tuple[Path, list[dict], list[str]]:
     trash = snap / RECYCLER
@@ -759,10 +948,13 @@ def validate_trash(snap: Path, trash: Path, entries: list[dict], errors: list[st
                 high, low = image_dimensions(original), image_dimensions(recycled)
                 if kind != "image" or high is None or low is None or not same_aspect_ratio([high, low]) or high[0]*high[1] <= low[0]*low[1]:
                     errors.append(f"高清替换条目分辨率校验失败：{kind}/{old}")
-            elif policy == "filesize":
-                # 新版规则仅依据字节数；仍需前面的双 SHA-256 一致性校验。
-                if kind != "image" or original.stat().st_size <= recycled.stat().st_size:
-                    errors.append(f"大文件保留条目体积校验失败：{kind}/{old}")
+            elif policy in ("filesize", "filesize_equal"):
+                # 对应文件和回收文件仍需逐个 SHA-256 与操作时记录匹配。
+                # filesize_equal 只用于冲突专用指令：正确命名文件优先。
+                kept_size, recycled_size = original.stat().st_size, recycled.stat().st_size
+                if ((policy == "filesize" and kept_size <= recycled_size) or
+                        (policy == "filesize_equal" and kept_size != recycled_size)):
+                    errors.append(f"保留文件体积校验失败：{kind}/{old}")
             else:
                 errors.append(f"未知回收策略 {policy}：{kind}/{old}")
         finally:
@@ -889,11 +1081,8 @@ def delete_reference_backups(snap: Path) -> int:
 
 
 def runall(root: Path) -> int:
-    """顺序运行既有子命令；遇到异常或未解决问题时不自动删除回收资料。"""
+    """依次扫描、修复、校验回收站并清理备份；未处理的冲突仅保留在报告中。"""
     account = root.resolve()
-    snap = account / "wayback_snapshots" if (account / "wayback_snapshots").is_dir() else account
-    reports_dir = snap / REPORTS
-    existing_reports = set(reports_dir.glob("apply_*.csv")) if reports_dir.is_dir() else set()
     python = sys.executable
     this_script = str(Path(__file__).resolve())
 
@@ -911,33 +1100,13 @@ def runall(root: Path) -> int:
     if not stage("2/4 修复", "--apply"):
         return 2
 
-    # 使用本次 --apply 刚产生的报告，不误读以前的旧报告。
-    new_reports = set(reports_dir.glob("apply_*.csv")) - existing_reports
-    if len(new_reports) != 1:
-        print("[runall 已停止] 无法唯一确定本次修复报告，回收站和备份均保留。", flush=True)
-        return 2
-    report = new_reports.pop()
-    try:
-        with report.open("r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        unresolved = [r for r in rows if r.get("status", "").removeprefix("THUMB_") in
-                      {"CONFLICT", "AMBIGUOUS", "UNVERIFIED", "ROLLED_BACK"}]
-    except (OSError, UnicodeError, csv.Error) as exc:
-        print(f"[runall 已停止] 无法核对修复报告：{exc}，自动清理已跳过。", flush=True)
-        return 2
-    if unresolved:
-        counts = Counter(r["status"] for r in unresolved)
-        detail = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-        print(f"\n[runall 暂停清理] 仍有 {len(unresolved)} 项未解决（{detail}）。", flush=True)
-        print(f"[检查报告] {report}", flush=True)
-        print("扫描和修复已完成；回收站及 HTML/index 备份将保留供检查。", flush=True)
-        return 2
-
+    # CONFLICT / UNVERIFIED / AMBIGUOUS 没有被移动，不影响已经成功处理项目的清理。
+    # 仍由 --delete-trash 执行全部清单、哈希和引用校验；校验失败时停止。
     if not stage("3/4 删除回收站", "--delete-trash"):
         return 2
     if not stage("4/4 删除 HTML/index 备份", "--delete-backups"):
         return 2
-    print("\n[runall 完成] 四个步骤均已成功执行。", flush=True)
+    print("\n[runall 完成] 四个步骤均已成功执行；未处理的冲突文件仍留在原处并记录于报告。", flush=True)
     return 0
 
 
@@ -949,6 +1118,9 @@ def main() -> int:
     group.add_argument("--delete-trash", action="store_true", help="SHA-256 和引用检查通过后，直接删除回收文件")
     group.add_argument("--delete-backups", action="store_true", help="删除本工具生成的 HTML/index 原版备份")
     group.add_argument("--runall", action="store_true", help="顺序扫描、修复、清理回收站及备份")
+    group.add_argument("--review-issues", action="store_true", help="在浏览器打开可直接定位到资源管理器的问题清单")
+    group.add_argument("--resolve-conflicts", action="store_true", help="仅处理 CONFLICT：按体积择大，相同体积优先正确命名版本")
+    group.add_argument("--select-file", metavar="TOKEN", help=argparse.SUPPRESS)
     ap.add_argument("--strict-scan", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.runall:
@@ -956,6 +1128,10 @@ def main() -> int:
     snap = args.root.resolve()
     if (snap / "wayback_snapshots").is_dir():
         snap = snap / "wayback_snapshots"
+    if args.select_file is not None:
+        return locate_in_explorer(snap, args.select_file)
+    if args.review_issues:
+        return review_issues(snap)
     if args.delete_trash:
         return delete_trash(snap)
     if args.delete_backups:
@@ -964,7 +1140,22 @@ def main() -> int:
     snap, found, suspicious, n_files, n_json, n_bad_json = discover(args.root.resolve())
     print(f"[扫描] 媒体 {n_files} 个，JSON 已读取 {n_json} 个，失败 {n_bad_json} 个")
     records = list(found.values()) + suspicious
-    classify(snap, found)
+    if args.resolve_conflicts:
+        # 首先按既有规则分类，确定哪些确实属于 CONFLICT。
+        classify(snap, found)
+        originally_conflicted = {key for key, rec in found.items() if get_status(rec) == "CONFLICT"}
+        # 再单独对此类候选进行更宽松的体积决策，普通 --apply 逻辑完全不变。
+        conflict_found = {key: rec for key, rec in found.items() if key in originally_conflicted}
+        for rec in conflict_found.values():
+            set_status(rec, "PENDING")
+        classify(snap, conflict_found, resolve_conflicts=True)
+        conflicted_ids = {id(rec) for rec in conflict_found.values()}
+        for rec in records:
+            if id(rec) not in conflicted_ids and get_status(rec) in ("RENAME", "TRASH", "REPLACE"):
+                set_status(rec, "SKIPPED")
+                rec["reason"] = "冲突专用指令：普通可修复项留给 --apply 处理"
+    else:
+        classify(snap, found)
     stats = Counter(r["status"] for r in records)
     print("[检查结果]", ", ".join(f"{k}={v}" for k, v in sorted(stats.items())) or "无旧版错误文件")
     for rec in sorted(records, key=lambda r: (r["status"], r["kind"], r["old"]))[:24]:
@@ -975,7 +1166,7 @@ def main() -> int:
         print(f"  ...其余 {len(records)-24} 条见 CSV 报告")
     if n_bad_json:
         print("[提醒] 有 JSON 解析失败；依赖这些 JSON 的媒体可能未被识别。")
-    if not args.apply:
+    if not (args.apply or args.resolve_conflicts):
         report = write_report(snap, records, "scan")
         print(f"[扫描报告] {report}")
         print("[只读预览完成] 未移动或更名媒体，未修改 HTML/index/推文 JSON。")
@@ -1031,8 +1222,7 @@ def main() -> int:
         return 2
     if not actions and not updates:
         print("没有能够安全自动修复的文件或残留旧引用。")
-        report = write_report(snap, records, "apply")
-        print("[报告]", report)
+        report = write_report(snap, records, "resolve_conflicts" if args.resolve_conflicts else "apply")
         if previous_entries:
             print("[下一步] 检查回收文件夹后执行：", deletion_hint(args))
         return 0
@@ -1081,8 +1271,11 @@ def main() -> int:
                     if sha256(src) != sha256(dst):
                         raise RuntimeError(f"执行前 SHA-256 校验未通过：{src} → {dst}")
                 elif policy == "filesize":
-                    if kind != "image" or src.stat().st_size >= dst.stat().st_size:
+                    if (not args.resolve_conflicts and kind != "image") or src.stat().st_size >= dst.stat().st_size:
                         raise RuntimeError(f"执行前文件体积比较未通过：{src}")
+                elif policy == "filesize_equal":
+                    if not args.resolve_conflicts or src.stat().st_size != dst.stat().st_size:
+                        raise RuntimeError(f"执行前等体积比较未通过：{src}")
                 else:
                     raise RuntimeError(f"未知回收策略：{policy}")
                 recycle_path = trash / kind / old
@@ -1125,8 +1318,7 @@ def main() -> int:
                     write_manifest(trash, previous_entries)
             except OSError as exc:
                 rollback_errors.append(f"回收清单还原失败：{exc}")
-        report = write_report(snap, records, "failed")
-        print(f"[报告] {report}")
+        report = write_report(snap, records, "resolve_conflicts_failed" if args.resolve_conflicts else "failed")
         if rollback_errors:
             for msg in rollback_errors:
                 print("[需要人工核对]", msg)
@@ -1135,12 +1327,11 @@ def main() -> int:
         print("本次有失败项，暂时不要删除回收文件夹。")
         return 2
 
-    report = write_report(snap, records, "apply")
+    report = write_report(snap, records, "resolve_conflicts" if args.resolve_conflicts else "apply")
     print(f"[修复] 更名 {sum(get_status(r)=='DONE_RENAME' for r in records)} 个，"
           f"大文件替换 {sum(get_status(r)=='DONE_REPLACE' for r in records)} 个，"
           f"旧文件回收 {sum(get_status(r)=='DONE_TRASH' for r in records)} 个；"
           f"引用更新 {len(modified_refs)} 个文件")
-    print("[报告]", report)
     if updates:
         print("[HTML/index 原版备份]", backup_root)
         print("[备份检查无误后可删除] python ../../fix_convert_media_names.py --delete-backups")
