@@ -1,6 +1,12 @@
 # IncandescenceArchiver_repair
 GPT6 VibeCoding
 
+IncandescenceReader修复版main.js  
+替换原版 解决视频无法播放的问题
+
+webarchived_tweet_downloader修复版download_archive.py  
+替换原版 解决Windows无法运行的问题
+
 python apply_convert_filename_fix.py  
 一次性补丁 修正archive.py中convert使用的safe_filename错误的问题  
 
