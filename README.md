@@ -5,7 +5,8 @@ IncandescenceReader修复版main.js
 替换原版 解决视频无法播放的问题
 
 download_archive.py
-替换webarchived_tweet_downloader原版 解决Windows兼容性问题，JSON_TIMEOUT改为60解决频繁readtimeout=15的问题，对上级回复链的查找顺序修改为wayback先于xAPI
+替换webarchived_tweet_downloader原版  
+解决Windows兼容性问题，JSON_TIMEOUT改为60解决频繁readtimeout=15的问题，对上级回复链的查找顺序修改为wayback先于xAPI
 
 python apply_convert_filename_fix.py  
 一次性补丁 修正archive.py中convert使用的safe_filename错误的问题  
