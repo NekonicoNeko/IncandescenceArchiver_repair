@@ -44,6 +44,9 @@ python ..\..\preview_image_repair.py download
 python ..\..\preview_image_repair.py convert "G:\工具\webarchived_tweet_downloader\username_archive"  
 从 webarchived_tweet_downloader 导入
 
+python "../../preview_image_repair.py" runall "G:\工具\webarchived_tweet_downloader\username_archive"  
+自动执行导入+下载
+
 ————————————————————————————
 
 修复convert已经生成的错误filename  
