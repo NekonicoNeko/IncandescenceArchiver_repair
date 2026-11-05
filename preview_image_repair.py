@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """独立修复 IncandescenceArchiver 缺失的视频 preview image。
 
-命令：scan / download / convert <webarchived_tweet_downloader dump_dir>
+命令：scan / download / convert <webarchived_tweet_downloader dump_dir> / runall <webarchived_tweet_downloader dump_dir>
 只向 wayback_snapshots/image/ 添加预览图，并写独立日志；不修改 archive.py 状态、HTML 或 JSON。
 """
 from __future__ import annotations
@@ -372,11 +372,24 @@ def main():
     sub.add_parser('download', help='从 preview_image_url / Wayback 下载缺失预览图')
     cp = sub.add_parser('convert', help='从 webarchived_tweet_downloader 的 media_index.json 复制预览图')
     cp.add_argument('dump_dir', help='上游归档目录（含 snapshots.json 或 *_archive_assets）')
+    rp = sub.add_parser('runall', help='先 convert 导入预览图，再 download 补下载剩余缺失预览图')
+    rp.add_argument('dump_dir', help='上游归档目录（含 snapshots.json 或 *_archive_assets）')
     args = parser.parse_args()
     try:
         if args.command=='scan': return scan(args)
         if args.command=='download': return download(args)
-        return convert(args)
+        if args.command=='convert': return convert(args)
+        print('\n[runall 1/2] convert：导入 downloader 已有的预览图', flush=True)
+        convert_rc = convert(args)
+        if convert_rc == 2:
+            print('\n[runall] convert 无法正常启动（例如路径或索引无效），已取消后续 download。', file=sys.stderr)
+            return 2
+        if convert_rc != 0:
+            print('\n[runall] convert 有部分文件导入失败；继续 download 补齐缺失预览图。', flush=True)
+        print('\n[runall 2/2] download：补下载仍缺失的预览图', flush=True)
+        download_rc = download(args)
+        print(f'\n[runall] 完成：convert 返回 {convert_rc}；download 返回 {download_rc}。')
+        return 0 if convert_rc == 0 and download_rc == 0 else 1
     except KeyboardInterrupt:
         print('\n用户中断；已完成文件保留，下次运行会重新检查。', file=sys.stderr); return 130
     except Exception as e:
