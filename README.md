@@ -21,9 +21,9 @@ python apply_render_media_priority_fix.py
 python ../../media_repair.py  
 默认自动顺序执行四步修复  
 子指令：avatar/imgvid/status/html，加--scan仅扫描  
-avatar,imgvid:扫描并下载本地缺失资源，imgvid可加--type images/videos
-status：备份主状态索引和现有 TXT，按本地文件修正不正确状态，重新生成正确状态 TXT
-html：检测JSON及本地文件存在，但HTML缺失引用的图片，为HTML重新插入缺失的本地图片引用
+avatar,imgvid:扫描并下载本地缺失资源，imgvid可加--type images/videos  
+status：备份主状态索引和现有 TXT，按本地文件修正不正确状态，重新生成正确状态 TXT  
+html：检测JSON及本地文件存在，但HTML缺失引用的图片，为HTML重新插入缺失的本地图片引用  
 
 ————————————————————————————
 
