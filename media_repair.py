@@ -1699,7 +1699,8 @@ def _root_for_reports() -> Path:
 
 
 def _perform(name: str, scan: bool, media_type: str = 'all', root_arg: str | None = None) -> int:
-    print(f'\n{"=" * 20} {name} / {"scan" if scan else "download/apply"} {"=" * 20}', flush=True)
+    action = 'scan' if scan else ('download' if name in ('avatar', 'imgvid') else 'apply')
+    print(f'\n{"=" * 20} {name} / {action} {"=" * 20}', flush=True)
     module = _load_original(name)
     if name == 'avatar':
         return int(module.scan(None) if scan else module.download(None))
