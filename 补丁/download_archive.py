@@ -302,6 +302,11 @@ ARCHIVE_FILTER_JS = """
 
   const allTweets = Array.from(document.querySelectorAll(".tweet"));
   if (!allTweets.length) return;
+  // WTD_HTML_AUTHOR_FILTER_PATCH_V1: visibility of independent cards only.
+  const archiveOwnerId = document.querySelector(".archive-shell")?.dataset.archiveUserId || "";
+  const isOwnTweet = (tweet) => !archiveOwnerId || !tweet.dataset.authorId || tweet.dataset.authorId === archiveOwnerId;
+  const ownTweets = allTweets.filter(isOwnTweet);
+  allTweets.forEach((tweet) => { if (!isOwnTweet(tweet)) tweet.hidden = true; });
 
   const controls = document.createElement("div");
   controls.className = "archive-controls";
@@ -310,9 +315,9 @@ ARCHIVE_FILTER_JS = """
   stickyBar.className = "archive-sticky-bar";
 
   setupArchiveTabs(allTweets, stickyBar);
-  setupTweetFilters(allTweets, controls);
-  setupCommentExpansion(allTweets, controls);
-  setupReplyChainExpansion(allTweets, controls);
+  setupTweetFilters(ownTweets, controls);
+  setupCommentExpansion(ownTweets, controls);
+  setupReplyChainExpansion(ownTweets, controls);
   if (controls.children.length) stickyBar.appendChild(controls);
 
   const header = document.querySelector(".archive-header");
@@ -344,9 +349,9 @@ ARCHIVE_FILTER_JS = """
 
   function setupArchiveTabs(tweets, container) {
     const tabKey = `${getArchiveStorageNamespace()}-archive-tab-v2`;
-    const posts = tweets.filter((t) => t.dataset.isReply !== "true");
-    const replyTweets = tweets.filter((t) => t.dataset.isReply === "true");
-    const threadRoots = tweets.filter((t) => t.dataset.hasComments === "true" && t.dataset.isComment !== "true");
+    const posts = ownTweets.filter((t) => t.dataset.isReply !== "true");
+    const replyTweets = ownTweets.filter((t) => t.dataset.isReply === "true");
+    const threadRoots = ownTweets.filter((t) => t.dataset.hasComments === "true" && t.dataset.isComment !== "true");
     const replyViewTweets = new Set([...threadRoots, ...replyTweets]);
     if (!replyTweets.length && !threadRoots.length) return;
 
@@ -354,7 +359,7 @@ ARCHIVE_FILTER_JS = """
     tabBar.className = "archive-tabs";
     tabBar.innerHTML =
       `<button class="archive-tab active" data-archive-tab="all">` +
-      `\u5168\u90e8<span class="archive-tab-meta">${tweets.length}</span></button>` +
+      `\u5168\u90e8<span class="archive-tab-meta">${ownTweets.length}</span></button>` +
     `<button class="archive-tab" data-archive-tab="posts">` +
       `\u5e16\u5b50<span class="archive-tab-meta">${posts.length}</span></button>` +
     `<button class="archive-tab" data-archive-tab="replies">` +
@@ -390,6 +395,7 @@ ARCHIVE_FILTER_JS = """
     }
 
     function tabAllowsTweet(tweet, name) {
+      if (!isOwnTweet(tweet)) return false;
       if (name === "all") return true;
       if (name === "posts") return tweet.dataset.isReply !== "true";
       return replyViewTweets.has(tweet);
@@ -885,6 +891,7 @@ class ArchiveEntry:
     deferred_comment_ids: Tuple[str, ...] = ()
     deferred_reply_chain_html: str = ""
     deferred_reply_chain_count: int = 0
+    author_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -911,6 +918,7 @@ class UserProfile:
     avatar_url: str
     followers: int
     following: int
+    user_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -3276,8 +3284,26 @@ def _extract_metadata_from_node(node: dict) -> Dict[str, str]:
         or _coerce_string(node.get("retweeted_status_id_str") or legacy.get("retweeted_status_id_str"))
         or text.startswith("RT @")
     ) else "false"
+    # WTD_HTML_AUTHOR_FILTER_PATCH_V1: author of this specific tweet.
+    author_id = _coerce_string(
+        node.get("author_id")
+        or node.get("user_id_str")
+        or legacy.get("user_id_str")
+        or legacy.get("user_id")
+    ).strip()
+    if not author_id:
+        core = node.get("core")
+        if isinstance(core, dict):
+            user_results = core.get("user_results")
+            if isinstance(user_results, dict):
+                user_result = user_results.get("result")
+                if isinstance(user_result, dict):
+                    author_id = _coerce_string(
+                        user_result.get("rest_id") or user_result.get("id_str") or user_result.get("id")
+                    ).strip()
     return {
         "tweet_id": tweet_id,
+        "author_id": author_id,
         "conversation_id": conversation_id,
         "in_reply_to_status_id": in_reply_to_status_id,
         "in_reply_to_user_id": in_reply_to_user_id,
@@ -4898,6 +4924,7 @@ def prepare_snapshot_json_and_media(
 def build_tweet_data_attributes(metadata: Dict[str, str], json_relative_path: str) -> str:
     attrs = {
         "data-tweet-id": metadata.get("tweet_id", ""),
+        "data-author-id": metadata.get("author_id", ""),
         "data-conversation-id": metadata.get("conversation_id", ""),
         "data-in-reply-to-status-id": metadata.get("in_reply_to_status_id", ""),
         "data-in-reply-to-user-id": metadata.get("in_reply_to_user_id", ""),
@@ -6647,6 +6674,7 @@ def render_snapshot_entry(
         original_url=record.original_url,
         index=index,
         tweet_id=tweet_id,
+        author_id=metadata.get("author_id", ""),
         conversation_id=metadata.get("conversation_id", ""),
         in_reply_to_status_id=in_reply_to_status_id,
         comment_html=comment_html,
@@ -6690,6 +6718,7 @@ def extract_user_profile(user: str, json_dir: Path) -> Optional[UserProfile]:
         avatar_url = avatar_url.replace("_normal.", "_400x400.")
     return UserProfile(
         username=_coerce_string(best.get("username")),
+        user_id=_coerce_string(best.get("id") or best.get("id_str") or best.get("rest_id")).strip(),
         display_name=_coerce_string(best.get("name")),
         description=_coerce_string(best.get("description")),
         location=_coerce_string(best.get("location")),
@@ -6744,7 +6773,7 @@ def render_document_start(user: str, total: int, asset_dir_name: str, title_suff
         "<body>\n"
         "<div class='detail-panel-backdrop' hidden></div>\n"
         "<div class='archive-layout'>\n"
-        "<div class='archive-shell'>\n"
+        f"<div class='archive-shell' data-archive-user-id='{html.escape(profile.user_id if profile else '', quote=True)}'>\n"
         f"{profile_html}"
         "  <header class='archive-header'>\n"
         f"    <h1 class='archive-title'>{html.escape(title)}</h1>\n"
@@ -7029,6 +7058,14 @@ def attach_local_comment_sections(entries: List[ArchiveEntry]) -> List[ArchiveEn
     return updated_entries
 
 
+def count_visible_archive_entries(entries: List[ArchiveEntry], profile: Optional[UserProfile]) -> int:
+    """Number of standalone cards that belong in the target account's list."""
+    owner_id = profile.user_id if profile else ""
+    if not owner_id:
+        return len(entries)  # Missing trustworthy ID: keep data visible instead of guessing.
+    return sum(1 for entry in entries if not entry.author_id or entry.author_id == owner_id)
+
+
 def write_archive_html(
     entries: List[ArchiveEntry],
     user: str,
@@ -7038,11 +7075,17 @@ def write_archive_html(
     profile: Optional[UserProfile] = None,
     avatar_path: str = "",
 ) -> None:
+    # WTD_HTML_AUTHOR_FILTER_PATCH_V1: filter only standalone presentation, not archived data.
+    owner_id = profile.user_id if profile else ""
+    visible_count = count_visible_archive_entries(entries, profile)
     tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
-        f.write(render_document_start(user, len(entries), asset_dir_name, title_suffix, profile=profile, avatar_path=avatar_path))
+        f.write(render_document_start(user, visible_count, asset_dir_name, title_suffix, profile=profile, avatar_path=avatar_path))
         for entry in entries:
-            f.write(entry.block)
+            if owner_id and entry.author_id and entry.author_id != owner_id:
+                f.write(add_tweet_data_attribute(entry.block, "hidden", ""))
+            else:
+                f.write(entry.block)
         f.write(render_document_end(asset_dir_name, render_deferred_archive_data(entries)))
     tmp_path.replace(output_path)
 
@@ -7081,12 +7124,14 @@ def write_additional_archive_outputs(
     for mode, title_suffix, target in get_archive_output_jobs(output_path)[1:]:
         write_archive_html(sort_entries(entries, mode), user, target, asset_dir_name, title_suffix, profile=profile, avatar_path=avatar_path)
         written_paths.append(target)
-    written_paths.append(write_index_html(user, len(entries), output_path))
+    written_paths.append(write_index_html(user, count_visible_archive_entries(entries, profile), output_path))
     return written_paths
 
 
 def write_all_archive_outputs(entries: List[ArchiveEntry], user: str, output_path: Path, asset_dir_name: str, profile: Optional[UserProfile] = None, avatar_path: str = "") -> List[Path]:
     entries = attach_local_comment_sections(entries)
+    if not profile or not profile.user_id:
+        print(f"Warning: no reliable numeric author ID for @{user}; HTML author filtering is disabled (no data removed).", flush=True)
     chronological_mode, chronological_suffix, chronological_target = get_archive_output_jobs(output_path)[0]
     write_archive_html(
         sort_entries(entries, chronological_mode),
