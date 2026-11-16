@@ -8001,28 +8001,28 @@ def main():
                 flush=True,
             )
     if args.repair_reply_chain_depth:
-        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else x_bearer_token.describe()
+        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else "no X API credentials"
         print(
             f"X API reply-chain repair is enabled to depth {args.repair_reply_chain_depth}, "
             f"min interval {X_API_MIN_INTERVAL_SECONDS:g}s ({auth_description}).",
             flush=True,
         )
     elif args.x_api_reply_chain_depth:
-        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else x_bearer_token.describe()
+        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else "no X API credentials"
         print(
             f"X API reply-chain lookup is enabled to depth {args.x_api_reply_chain_depth}, "
             f"min interval {X_API_MIN_INTERVAL_SECONDS:g}s ({auth_description}).",
             flush=True,
         )
     if args.x_api_timeline:
-        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else x_bearer_token.describe()
+        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else "no X API credentials"
         print(
             f"X API timeline fetch is enabled: {args.x_api_timeline_pages} page(s), "
             f"{args.x_api_timeline_page_size} tweets/page, min interval {X_API_MIN_INTERVAL_SECONDS:g}s ({auth_description}).",
             flush=True,
         )
     if args.x_api_conversations:
-        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else x_bearer_token.describe()
+        auth_description = "; ".join(auth.describe() for auth in x_api_auths) if x_api_auths else "no X API credentials"
         print(
             f"X API conversation search is enabled: {args.x_api_conversation_search}, "
             f"{args.x_api_conversation_pages} page(s)/conversation, "
