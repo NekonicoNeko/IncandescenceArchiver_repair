@@ -352,8 +352,8 @@ ARCHIVE_FILTER_JS = """
     const posts = ownTweets.filter((t) => t.dataset.isReply !== "true");
     const replyTweets = ownTweets.filter((t) => t.dataset.isReply === "true");
     const threadRoots = ownTweets.filter((t) => t.dataset.hasComments === "true" && t.dataset.isComment !== "true");
-    const replyViewTweets = new Set([...threadRoots, ...replyTweets]);
-    if (!replyTweets.length && !threadRoots.length) return;
+    const replyViewTweets = new Set(replyTweets);
+    if (!replyTweets.length) return;
 
     const tabBar = document.createElement("div");
     tabBar.className = "archive-tabs";
